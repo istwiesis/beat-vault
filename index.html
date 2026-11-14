@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beat Vault</title>
+<link rel="stylesheet" href="css/base.css">
+<style>
+  body { background: #0b0b0c; --pb-accent: #e9e4d8; }
+  .rn { display: none; }
+  header { padding: 40px 40px 0; display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+  header h1 { margin: 0; font: clamp(64px, 12vw, 190px)/.85 'Anton', sans-serif; letter-spacing: -.01em; text-transform: uppercase; }
+  header p { margin: 0 0 10px; font: 12px/1.6 'Space Mono', monospace; opacity: .55; text-align: right; text-transform: uppercase; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; padding: 30px 40px calc(var(--pb-h) + 40px); }
+  .tile {
+    position: relative; aspect-ratio: 3 / 4; border-radius: 8px; overflow: hidden; text-decoration: none;
+    background: #151517; border: 1px solid rgba(255,255,255,.06); isolation: isolate;
+    transition: transform .4s cubic-bezier(.2,.8,.2,1), border-color .3s;
+  }
+  .tile:hover { transform: translateY(-6px); border-color: rgba(255,255,255,.25); }
+  .tile .label { position: absolute; left: 18px; right: 18px; bottom: 16px; z-index: 5; display: flex; justify-content: space-between; align-items: flex-end; }
+  .tile .label b { font: 34px/1 'Anton', sans-serif; text-transform: uppercase; }
+  .tile .label small { font: 10px 'Space Mono', monospace; opacity: .6; text-align: right; text-transform: uppercase; max-width: 50%; }
+  .tile .no { position: absolute; top: 14px; left: 18px; font: 11px 'Space Mono', monospace; opacity: .5; z-index: 5; }
+  .preview { position: absolute; inset: 0; display: grid; place-items: center; }
+
+  /* discs */
+  .p-discs { background: #1c1e1f; }
+  .p-discs img { position: absolute; width: 58%; border-radius: 50%; box-shadow: 0 0 0 3px #ccc, 0 20px 40px #000;
+    -webkit-mask: radial-gradient(circle, transparent 9%, #000 9.5%); mask: radial-gradient(circle, transparent 9%, #000 9.5%);
+    animation: spin 9s linear infinite; }
+  .p-discs img:nth-child(1) { transform: translate(-45%, 25%); left: 0; } .p-discs img:nth-child(2) { left: 21%; top: 22%; }
+  .p-discs img:nth-child(3) { left: 55%; top: 2%; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /* rain */
+  .p-rain { background: linear-gradient(#000, #222 70%, #111); overflow: hidden; }
+  .p-rain::before { content: ''; position: absolute; inset: -100% 0 0; background: repeating-linear-gradient(100deg, transparent 0 18px, rgba(255,255,255,.25) 18px 19px); background-size: 100% 60px; animation: rain .5s linear infinite; }
+  @keyframes rain { to { transform: translateY(60px); } }
+  .p-rain span { font: 64px 'Pirata One', serif; position: relative; filter: drop-shadow(2px 0 #f0f) drop-shadow(-2px 0 #0ff); }
+  /* store */
+  .p-object { background: #1c1d1f; }
+  .p-object span { position: absolute; left: 18px; top: 40px; font: 54px/.9 'Instrument Serif', serif; color: #d9d4cb; }
+  .p-object i { position: absolute; width: 46%; aspect-ratio: 1; border-radius: 46% 46% 40% 40%; right: 12%; bottom: 18%;
+    background: repeating-linear-gradient(60deg, #e8e6e1 0 4px, #c9c6bf 4px 6px); animation: nod 1s ease-in-out infinite; }
+  .p-object i::before, .p-object i::after { content: ''; position: absolute; top: 30%; width: 26%; height: 36%; border-radius: 30%; background: #1b2340; }
+  .p-object i::before { left: -14%; } .p-object i::after { right: -14%; }
+  @keyframes nod { 50% { transform: rotate(4deg) translateY(4px); } }
+  .p-object em { position: absolute; left: 18px; top: 140px; background: #1a1ad8; color: #fff; font: 600 12px 'Inter Tight'; font-style: normal; padding: 8px 12px; }
+  @media (max-width: 820px) { header, .grid { padding-left: 16px; padding-right: 16px; } header p { text-align: left; } }
+
+  /* intro */
+  .intro { position: fixed; inset: 0; z-index: 100; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; transition: opacity .8s; }
+  .intro.out { opacity: 0; pointer-events: none; }
+  .intro[hidden] { display: none; }
+  .intro svg.logo { width: min(900px, 100%); height: auto; animation: intro-in 1.6s ease-out; }
+  @keyframes intro-in { from { opacity: 0; filter: blur(6px); } }
+  .intro .start { position: relative; width: min(420px, 100%); height: 40px; margin-top: -2%; display: grid; place-items: center; }
+  .intro .start svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .intro .start button { position: relative; padding: 9px 26px; background: #000; border: 1px solid rgba(255,255,255,.35); font: 13px 'Inter Tight', sans-serif; letter-spacing: .14em; color: #ddd; transition: border-color .2s, color .2s; }
+  .intro .start button:hover, .intro .start button:focus-visible { border-color: #fff; color: #fff; outline: none; }
+  .intro .music { margin-top: 36px; font: 11px 'Inter Tight', sans-serif; letter-spacing: .16em; color: #888; }
+  .intro .music:hover { color: #ddd; }
+  @media (prefers-reduced-motion: reduce) { .intro, .intro svg.logo { transition: none; animation: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="artist"></h1>
+  <p id="info"></p>
+</header>
+<nav class="grid" id="grid"></nav>
+
+<div class="intro" id="intro" hidden>
+  <svg class="logo" id="logo" viewBox="-620 -270 1240 520" role="img"></svg>
+  <div class="start">
+    <svg viewBox="0 0 420 40" preserveAspectRatio="none" aria-hidden="true"><path d="M0 22 H120 C150 22 150 6 175 14 S 205 34 235 20 S 280 10 300 22 H420" fill="none" stroke="#bbb" stroke-width="1"/></svg>
+    <button id="start">CLICK TO START</button>
+  </div>
+  <button class="music" id="music" aria-pressed="true">🔊&nbsp; MUSIC ON</button>
+</div>
+
+<script type="module">
+import { initPlayer, ROOMS, roomURL } from './js/player.js';
+import { coverURL } from './js/covers.js';
+import { CONFIG } from './js/config.js';
+
+const player = initPlayer({ room: 'hub' });
+const B = player.beats;
+document.getElementById('artist').textContent = CONFIG.artist;
+document.getElementById('info').innerHTML = `${CONFIG.tagline}<br>${B.length} beats · ${ROOMS.length} rooms<br>pick a room ↓`;
+
+const pick = (k) => B[(k * 37 + 11) % B.length];
+const img = (k, s = 256) => `<img alt="" src="${coverURL(pick(k), s)}">`;
+const previews = {
+  discs: `<div class="preview p-discs">${img(1)}${img(2)}${img(3)}</div>`,
+  rain: `<div class="preview p-rain"><span>${CONFIG.artist.toLowerCase()}</span></div>`,
+  object: `<div class="preview p-object"><span>Beat<br><i style="all:unset;font-style:italic">Store</i></span><em>Beats ansehen</em><i></i></div>`,
+};
+const sub = { discs: 'disc carousel', rain: '3d night drive', object: 'store + 3d mascot' };
+document.getElementById('grid').innerHTML = ROOMS.map((r, k) => `
+  <a class="tile" href="${roomURL(r)}">
+    <span class="no">0${k + 1}</span>
+    ${previews[r.id]}
+    <span class="label"><b>${r.name}</b><small>${sub[r.id]}</small></span>
+  </a>`).join('');
+
+// ---------- intro: thorn logo ----------
+// shortcut: glyphs only for I S T W E, add a skeleton to G if CONFIG.artist changes
+const G = {
+  I: [[.5, -.18, .5, 1.18]],
+  S: [[.92, .02, .12, .2, -14], [.12, .2, .88, .8], [.88, .8, .06, 1.02, -14]],
+  T: [[-.12, .04, 1.12, .04], [.5, -.12, .5, 1.22]],
+  W: [[-.05, -.12, .25, 1.05], [.25, 1.05, .5, .3], [.5, .3, .75, 1.05], [.75, 1.05, 1.05, -.12]],
+  E: [[.1, -.1, .1, 1.08], [.05, .02, 1, -.04], [.1, .5, .78, .5], [.05, 1, 1, 1.06]],
+};
+let seed = 7;
+const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+const f = (n) => +n.toFixed(1);
+const blade = (x1, y1, x2, y2, w, b = 0) => {
+  const L = Math.hypot(x2 - x1, y2 - y1) || 1, nx = -(y2 - y1) / L, ny = (x2 - x1) / L, mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+  return `M${f(x1)} ${f(y1)}Q${f(mx + nx * (w + b))} ${f(my + ny * (w + b))} ${f(x2)} ${f(y2)}Q${f(mx - nx * (w - b))} ${f(my - ny * (w - b))} ${f(x1)} ${f(y1)}Z`;
+};
+const star = (x, y, rx, ry) => `M${x} ${y - ry}L${x + rx * .16} ${y - ry * .16}L${x + rx} ${y}L${x + rx * .16} ${y + ry * .16}L${x} ${y + ry}L${x - rx * .16} ${y + ry * .16}L${x - rx} ${y}L${x - rx * .16} ${y - ry * .16}Z`;
+const branch = (x, y, a, len, d, curl) => {
+  const ex = x + Math.cos(a) * len, ey = y + Math.sin(a) * len;
+  let p = blade(x, y, ex, ey, len * .13, len * .1 * curl);
+  if (d > 0) {
+    p += branch(ex, ey, a + curl * (.3 + rnd() * .3), len * (.6 + rnd() * .15), d - 1, curl);
+    const t = .4 + rnd() * .3;
+    p += branch(x + (ex - x) * t, y + (ey - y) * t, a - curl * (.6 + rnd() * .4), len * (.4 + rnd() * .15), d - 1, -curl);
+  }
+  return p;
+};
+
+const word = CONFIG.artist.toUpperCase(), step = 80, W = 66, H = 124, top = -64;
+let text = '';
+[...word].forEach((ch, k) => {
+  const x0 = (k - (word.length - 1) / 2) * step - W / 2;
+  for (const [u1, v1, u2, v2, b = 0] of G[ch] || []) {
+    const x1 = x0 + u1 * W, y1 = top + v1 * H, x2 = x0 + u2 * W, y2 = top + v2 * H;
+    text += blade(x1, y1, x2, y2, 16, b);
+    if (rnd() < .7) { // small thorn sprouting off the stroke
+      const t = .2 + rnd() * .6, a = Math.atan2(y2 - y1, x2 - x1) + (rnd() < .5 ? -1 : 1) * (.5 + rnd() * .5), l = 12 + rnd() * 18;
+      const px = x1 + (x2 - x1) * t, py = y1 + (y2 - y1) * t;
+      text += blade(px, py, px + Math.cos(a) * l, py + Math.sin(a) * l, 5, (rnd() - .5) * 6);
+    }
+  }
+});
+// one side of the antlers, mirrored for symmetry
+const edge = -(word.length - 1) / 2 * step - W / 2;
+const side = branch(edge + 20, -40, -2.25, 140, 3, -1) + branch(edge + 10, 10, 3.05, 150, 3, -1) + branch(edge + 20, 55, 2.35, 175, 3, 1)
+  + branch(edge + 110, -70, -1.95, 95, 2, -1) + branch(-30, -78, -1.85, 70, 2, -1) + branch(edge + 90, 70, 1.9, 80, 2, 1);
+document.getElementById('logo').innerHTML = `<g fill="#f2f2f2"><path d="${text}"/><path d="${side}"/><path d="${side}" transform="scale(-1 1)"/>
+  <path d="${blade(0, -60, 0, -150, 9) + star(0, -165, 12, 22) + star(0, 125, 20, 58)}"/></g>`;
+document.getElementById('logo').setAttribute('aria-label', CONFIG.artist);
+
+// ---------- intro: start + music ----------
+const intro = document.getElementById('intro'), musicBtn = document.getElementById('music');
+let seen = false, music = true;
+try { seen = sessionStorage.getItem('bv-intro') === '1'; } catch {}
+if (!seen) { intro.hidden = false; document.getElementById('start').focus(); }
+musicBtn.onclick = () => {
+  music = !music;
+  musicBtn.setAttribute('aria-pressed', music);
+  musicBtn.innerHTML = music ? '🔊&nbsp; MUSIC ON' : '🔈&nbsp; MUSIC OFF';
+};
+document.getElementById('start').onclick = () => {
+  if (music && !player.playing) player.play();
+  try { sessionStorage.setItem('bv-intro', '1'); } catch {}
+  intro.classList.add('out');
+  setTimeout(() => (intro.hidden = true), 800);
+};
+</script>
+</body>
+</html>

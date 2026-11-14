@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Night Drive — Beat Vault</title>
+<link rel="stylesheet" href="../css/base.css">
+<script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }</script>
+<style>
+  body { background: #000; overflow: hidden; --pb-accent: #fff; --pb-bg: rgba(0,0,0,.7); }
+  #stage { position: fixed; inset: 0; filter: grayscale(1) contrast(1.15) brightness(1.05); }
+  .grain { position: fixed; inset: -50%; pointer-events: none; z-index: 2; opacity: .09;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    animation: grain .4s steps(4) infinite; }
+  @keyframes grain { 25% { transform: translate(-3%, 2%); } 50% { transform: translate(2%, -3%); } 75% { transform: translate(-1%, 3%); } }
+  .flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 3; mix-blend-mode: overlay; }
+
+  .mark { position: fixed; top: 22px; left: 40px; z-index: 10; font: 34px/1 'Pirata One', serif; color: #fff; text-decoration: none; letter-spacing: .02em; text-shadow: 0 0 12px rgba(255,255,255,.3); }
+  .dots { position: fixed; top: 34px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; align-items: center; gap: 0; }
+  .dots button { width: 98px; height: 20px; position: relative; }
+  .dots button::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: rgba(255,255,255,.12); }
+  .dots button::after { content: ''; position: absolute; left: 50%; top: 50%; width: 7px; height: 7px; margin: -3.5px; border-radius: 50%; background: rgba(255,255,255,.35); transition: transform .3s, background .3s; }
+  .dots button:hover::after { transform: scale(1.6); background: #fff; }
+  .dots button.is-current::after { content: '✦'; width: auto; height: auto; background: none; color: #fff; font-size: 34px; margin: -21px 0 0 -12px; }
+  .round { position: fixed; top: 22px; right: 40px; z-index: 10; width: 38px; height: 38px; border-radius: 50%; background: #fff; color: #000; font-size: 14px; }
+  .rn { top: auto; bottom: calc(var(--pb-h) + 34px); right: 40px; font-size: 12px; }
+
+  .hero { position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; pointer-events: none; }
+  .hero-inner { text-align: center; transform: translateY(4vh); }
+  .year { font: 300 26px 'Inter Tight', sans-serif; letter-spacing: .02em; margin-bottom: -.2em; opacity: .9; }
+  .logo {
+    --split: 0;
+    position: relative; font: clamp(80px, 15vw, 230px)/.9 'Pirata One', serif; color: #fff; white-space: nowrap;
+    filter: url(#thorns) drop-shadow(0 0 18px rgba(255,255,255,.25));
+    transition: opacity .35s, filter .35s;
+  }
+  .logo.out { opacity: 0; }
+  .logo::before, .logo::after { content: attr(data-t); position: absolute; inset: 0; mix-blend-mode: screen; opacity: var(--split, 0); }
+  .logo::before { color: #f0f; transform: translate(calc(var(--split) * -10px), 0); clip-path: inset(30% 0 35% 0); }
+  .logo::after { color: #0ff; transform: translate(calc(var(--split) * 10px), 2px); clip-path: inset(55% 0 10% 0); }
+  .meta { margin-top: 12px; font: 12px 'Space Mono', monospace; letter-spacing: .3em; opacity: .6; text-transform: uppercase; }
+
+  .np { position: fixed; left: 40px; bottom: calc(var(--pb-h) + 34px); z-index: 10; font: 300 15px/1.2 'Inter Tight', sans-serif; }
+  .np b { display: block; font-weight: 400; text-transform: uppercase; }
+  #wave { position: fixed; right: 40px; bottom: calc(var(--pb-h) + 64px); width: 140px; height: 40px; z-index: 10; }
+  @media (max-width: 820px) {
+    .dots button { width: 40px; } .mark { left: 16px; } .round { right: 16px; } .np { left: 16px; } #wave { display: none; }
+    .dots { top: 76px; }
+    .rn { top: 112px; bottom: auto; left: 16px; right: 16px; justify-content: center; }
+  }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <filter id="thorns"><feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="2" seed="4" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="9"/></filter>
+</svg>
+<canvas id="stage"></canvas>
+<div class="grain"></div>
+<div class="flash" id="flash"></div>
+<a class="mark" href="../index.html" id="mark"></a>
+<div class="dots" id="dots"></div>
+<button class="round" id="round" aria-label="Play/Pause">▶</button>
+<div class="hero"><div class="hero-inner">
+  <div class="year" id="year"></div>
+  <div class="logo" id="logo"></div>
+  <div class="meta" id="meta"></div>
+</div></div>
+<div class="np">now playing:<b id="np"></b></div>
+<canvas id="wave"></canvas>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { initPlayer } from '../js/player.js';
+import { fmt } from '../js/covers.js';
+import { CONFIG } from '../js/config.js';
+
+const player = initPlayer({ room: 'rain' });
+const BEATS = player.beats, N = BEATS.length;
+const $ = (id) => document.getElementById(id);
+const wrap = (i) => ((i % N) + N) % N;
+
+const roman = (n) => [[1000,'M'],[900,'CM'],[500,'D'],[400,'CD'],[100,'C'],[90,'XC'],[50,'L'],[40,'XL'],[10,'X'],[9,'IX'],[5,'V'],[4,'IV'],[1,'I']].reduce((s,[v,r]) => { while (n >= v) { s += r; n -= v; } return s; }, '');
+$('year').textContent = roman(new Date().getFullYear());
+$('mark').textContent = CONFIG.artist;
+
+// ---------- UI ----------
+let view = player.index;
+function renderDots() {
+  const d = $('dots');
+  d.innerHTML = '';
+  for (let o = -2; o <= 2; o++) {
+    const b = document.createElement('button');
+    const i = wrap(view + o);
+    b.title = BEATS[i].title;
+    b.className = o === 0 ? 'is-current' : '';
+    b.onclick = () => show(i, true);
+    d.append(b);
+  }
+}
+function show(i, play) {
+  view = i;
+  const logo = $('logo');
+  logo.classList.add('out');
+  setTimeout(() => {
+    const b = BEATS[i];
+    logo.textContent = b.title;
+    logo.dataset.t = b.title;
+    logo.style.fontSize = b.title.length > 9 ? `clamp(48px, ${130 / b.title.length}vw, 200px)` : '';
+    $('meta').textContent = `${b.bpm ?? '—'} bpm · ${fmt(b.duration)} · ${b.versions.length > 1 ? b.versions.length + ' versions' : 'beat'}`;
+    logo.classList.remove('out');
+  }, 300);
+  renderDots();
+  if (play) player.play(i);
+}
+player.on('change', (b, i) => { $('np').textContent = b.title; if (i !== view) show(i); });
+player.on('play', () => ($('round').textContent = '⏸'));
+player.on('pause', () => ($('round').textContent = '▶'));
+$('round').onclick = () => (player.index === view ? player.toggle() : player.play(view));
+show(view);
+$('np').textContent = player.current.title;
+addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight') show(wrap(view + 1), player.playing);
+  if (e.key === 'ArrowLeft') show(wrap(view - 1), player.playing);
+});
+let wheelLock = 0;
+addEventListener('wheel', (e) => {
+  if (e.target.closest('.pd, .pb') || performance.now() < wheelLock) return;
+  wheelLock = performance.now() + 600;
+  show(wrap(view + Math.sign(e.deltaY || e.deltaX)), player.playing);
+}, { passive: true });
+
+// swipe / drag sideways to change beat
+let swipe = null;
+$('stage').addEventListener('pointerdown', (e) => (swipe = e.clientX));
+addEventListener('pointerup', (e) => {
+  if (swipe === null) return;
+  const dx = e.clientX - swipe; swipe = null;
+  if (Math.abs(dx) > 40) show(wrap(view - Math.sign(dx)), player.playing);
+});
+
+// ---------- scene ----------
+const canvas = $('stage');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050505);
+// metal paint/chrome renders black without something to reflect
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.35;
+scene.fog = new THREE.FogExp2(0x070707, 0.045);
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
+
+function resize() { renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+
+const ambient = new THREE.HemisphereLight(0x9aa0aa, 0x050505, 0.35);
+scene.add(ambient);
+const moon = new THREE.DirectionalLight(0xffffff, 0.6);
+moon.position.set(-10, 20, -10);
+scene.add(moon);
+
+// wet asphalt: noise roughness so puddles reflect
+function noiseTex(size, fn) {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d'), img = g.createImageData(size, size);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const v = fn(x / size, y / size) * 255, k = (y * size + x) * 4;
+    img.data[k] = img.data[k + 1] = img.data[k + 2] = v; img.data[k + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+}
+const blob = (x, y) => (Math.sin(x * 19.3 + Math.sin(y * 7.1) * 3) + Math.sin(y * 13.7 + Math.cos(x * 5.3) * 2) + Math.sin((x + y) * 31)) / 3;
+const rough = noiseTex(256, (x, y) => 0.15 + 0.7 * Math.min(1, Math.max(0, (0.45 - blob(x, y)) * 2.5)) + Math.random() * 0.05);
+rough.repeat.set(2, 6);
+const asphaltCol = noiseTex(256, () => 0.18 + Math.random() * 0.1);
+asphaltCol.repeat.set(8, 30);
+const road = new THREE.Mesh(
+  new THREE.PlaneGeometry(26, 160),
+  new THREE.MeshStandardMaterial({ map: asphaltCol, roughnessMap: rough, roughness: 1, metalness: 0.35, color: 0x777777 })
+);
+road.rotation.x = -Math.PI / 2;
+road.position.z = -40;
+scene.add(road);
+
+// lane marking
+const laneMat = new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.6, emissive: 0x111111 });
+for (let z = 10; z > -110; z -= 9) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 4), laneMat);
+  m.rotation.x = -Math.PI / 2; m.rotation.z = 0.04; m.position.set(2.6 + z * 0.0, 0.01, z);
+  scene.add(m);
+}
+
+// guardrails
+const railMat = new THREE.MeshStandardMaterial({ color: 0xbbbbbb, metalness: 0.8, roughness: 0.35 });
+for (const side of [-1, 1]) {
+  const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.35, 160), railMat);
+  rail.position.set(side * 9, 0.85, -40);
+  scene.add(rail);
+  const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.15, 0.85, 0.15), railMat, 60);
+  const m = new THREE.Matrix4();
+  for (let k = 0; k < 60; k++) { m.makeTranslation(side * 9.05, 0.42, 20 - k * 2.6); posts.setMatrixAt(k, m); }
+  scene.add(posts);
+}
+
+// a boxy old sedan, built from primitives
+const car = new THREE.Group();
+const paint = new THREE.MeshPhysicalMaterial({ color: 0x9a9a9a, metalness: 0.3, roughness: 0.35, clearcoat: 1, clearcoatRoughness: 0.2 });
+const glass = new THREE.MeshPhysicalMaterial({ color: 0x111111, metalness: 0.2, roughness: 0.05, clearcoat: 1 });
+const chrome = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 1, roughness: 0.15 });
+const tire = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
+const box = (w, h, d, mat, x, y, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); car.add(m); return m; };
+box(2.1, 0.62, 5.2, paint, 0, 0.72, 0);             // body
+box(1.86, 0.55, 2.4, glass, 0, 1.28, -0.35);        // cabin glass
+box(1.9, 0.08, 2.3, paint, 0, 1.58, -0.4);          // roof
+box(2.14, 0.16, 0.18, chrome, 0, 0.5, 2.62);        // bumper
+const grille = box(1.1, 0.3, 0.05, chrome, 0, 0.78, 2.61);
+const lampMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 3 });
+for (const s of [-1, 1]) {
+  box(0.42, 0.22, 0.05, lampMat, s * 0.8, 0.8, 2.62);
+  for (const z of [1.6, -1.6]) {
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 0.3, 24), tire);
+    w.rotation.z = Math.PI / 2; w.position.set(s * 1.02, 0.38, z); car.add(w);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.32, 16), chrome);
+    hub.rotation.z = Math.PI / 2; hub.position.copy(w.position); car.add(hub);
+  }
+  const spot = new THREE.SpotLight(0xffffff, 60, 40, 0.42, 0.5, 1.6);
+  spot.position.set(s * 0.8, 0.8, 2.7);
+  spot.target.position.set(s * 1.5, 0, 16);
+  car.add(spot, spot.target);
+}
+// light beams (fake volume)
+const beamMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.03, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+for (const s of [-1, 1]) {
+  // tip at the lamp, base 6 units ahead (stays in front of the camera)
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(1.5, 6, 32, 1, true), beamMat);
+  cone.rotation.x = -Math.PI / 2 - 0.06; cone.position.set(s * 0.9, 0.75, 5.7);
+  car.add(cone);
+}
+car.position.set(-0.6, 0, -4);
+car.rotation.y = 0.32;
+scene.add(car);
+
+// rain
+const DROPS = innerWidth < 820 ? 2500 : 5000, AREA = { x: 34, y: 16, z: 50 };
+const rainGeo = new THREE.BufferGeometry();
+const rp = new Float32Array(DROPS * 6), speeds = new Float32Array(DROPS);
+for (let i = 0; i < DROPS; i++) {
+  const x = (Math.random() - .5) * AREA.x, y = Math.random() * AREA.y, z = 14 - Math.random() * AREA.z;
+  rp.set([x, y, z, x + 0.02, y - 0.5, z], i * 6);
+  speeds[i] = 14 + Math.random() * 10;
+}
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rp, 3));
+const rain = new THREE.LineSegments(rainGeo, new THREE.LineBasicMaterial({ color: 0xcccccc, transparent: true, opacity: 0.35 }));
+scene.add(rain);
+
+// ripples on the road
+const ripples = [];
+const ripMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false });
+for (let k = 0; k < 60; k++) {
+  const r = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.08, 20), ripMat.clone());
+  r.rotation.x = -Math.PI / 2; r.position.y = 0.02; r.userData.t = Math.random();
+  r.position.set((Math.random() - .5) * 16, 0.02, 6 - Math.random() * 22);
+  scene.add(r); ripples.push(r);
+}
+
+// ---------- wave widget ----------
+const wave = $('wave'), wg = wave.getContext('2d');
+wave.width = 280; wave.height = 80;
+
+// ---------- mouse parallax ----------
+const mouse = { x: 0, y: 0 };
+addEventListener('pointermove', (e) => { mouse.x = e.clientX / innerWidth - 0.5; mouse.y = e.clientY / innerHeight - 0.5; });
+
+// ---------- loop ----------
+const clock = new THREE.Clock();
+let flash = 0, split = 0;
+function frame() {
+  requestAnimationFrame(frame);
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  const bass = player.bass, kick = player.kick;
+
+  // camera: slow push-in, drift with mouse, shake on kicks
+  const cx = Math.sin(t * 0.12) * 1.2 + mouse.x * 1.5;
+  const cy = 1.25 + Math.sin(t * 0.2) * 0.1 - mouse.y * 0.4;
+  camera.position.set(cx + (Math.random() - .5) * kick * 0.06, cy + (Math.random() - .5) * kick * 0.04, 8.5 + Math.sin(t * 0.07) * 1.2);
+  camera.lookAt(-0.3, 0.9, -4);
+
+  // rain falls faster/denser with bass
+  const sp = 1 + bass * 0.8, slant = 0.06 + mouse.x * 0.05;
+  for (let i = 0; i < DROPS; i++) {
+    const k = i * 6;
+    let y = rp[k + 1] - speeds[i] * sp * dt;
+    if (y < 0) { y = AREA.y; rp[k] = (Math.random() - .5) * AREA.x + camera.position.x; rp[k + 2] = 14 - Math.random() * AREA.z; }
+    rp[k + 1] = y; rp[k + 3] = rp[k] + slant; rp[k + 4] = y - 0.45 - bass * 0.4; rp[k + 5] = rp[k + 2];
+    rp[k] += slant * dt * 4;
+  }
+  rainGeo.attributes.position.needsUpdate = true;
+  rain.material.opacity = 0.25 + bass * 0.25;
+
+  for (const r of ripples) {
+    r.userData.t += dt * 1.6;
+    if (r.userData.t > 1) { r.userData.t = 0; r.position.set((Math.random() - .5) * 16, 0.02, 6 - Math.random() * 22); }
+    const s = 1 + r.userData.t * 5; r.scale.set(s, s, 1); r.material.opacity = (1 - r.userData.t) * 0.35;
+  }
+
+  // engine idle wobble, thump on bass
+  car.position.y = Math.sin(t * 30) * 0.004 + bass * 0.02;
+  lampMat.emissiveIntensity = 2.5 + bass * 2;
+  beamMat.opacity = 0.025 + bass * 0.04;
+
+  // lightning on strong kicks
+  if (kick > 0.95 && Math.random() < 0.08) flash = 1;
+  flash *= 0.85;
+  $('flash').style.opacity = flash * 0.6;
+  ambient.intensity = 0.35 + flash * 3;
+
+  // RGB split on the title
+  split += ((kick > 0.5 ? 1 : 0) - split) * 0.25;
+  $('logo').style.setProperty('--split', split.toFixed(3));
+
+  // wave widget
+  wg.clearRect(0, 0, 280, 80);
+  wg.strokeStyle = '#fff'; wg.lineWidth = 2; wg.beginPath();
+  const amp = 8 + player.level * 40;
+  for (let x = 0; x <= 280; x += 4) {
+    const y = 40 + Math.sin(x / 280 * Math.PI * 2 + t * 3) * amp * Math.sin(x / 280 * Math.PI);
+    x ? wg.lineTo(x, y) : wg.moveTo(x, y);
+  }
+  wg.stroke();
+
+  renderer.render(scene, camera);
+}
+frame();
+</script>
+</body>
+</html>

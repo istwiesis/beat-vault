@@ -1,0 +1,5 @@
+*.wav
+tools/ffmpeg/
+__pycache__/
+.claude/
+beat-vault/

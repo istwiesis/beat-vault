@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discs — Beat Vault</title>
+<link rel="stylesheet" href="../css/base.css">
+<script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }</script>
+<style>
+  body { background: #1c1e1f; overflow: hidden; --pb-accent: #e9e4d8; }
+  #stage { position: fixed; inset: 0; cursor: grab; }
+  #stage.dragging { cursor: grabbing; }
+  .info {
+    position: fixed; top: 20px; left: 22px; width: min(400px, 40vw); z-index: 5;
+    font-family: 'Inter Tight', sans-serif; pointer-events: none;
+  }
+  .info h1 {
+    font: 400 clamp(34px, 3.6vw, 56px)/0.95 'Bodoni Moda', Georgia, serif; text-transform: uppercase;
+    margin: 0 0 18px; letter-spacing: -.01em; word-break: break-word;
+  }
+  .row { display: flex; justify-content: space-between; align-items: flex-start; border-top: 1px solid rgba(255,255,255,.22); padding: 9px 0 7px; }
+  .row small { font: 600 10px 'Inter Tight', sans-serif; letter-spacing: .22em; text-transform: uppercase; opacity: .85; padding-top: 4px; }
+  .row span { font-size: 19px; letter-spacing: -.02em; text-align: right; line-height: 1.3; }
+  .info .swap { transition: opacity .25s, transform .25s; }
+  .info.out .swap { opacity: 0; transform: translateY(6px); }
+  .quotes {
+    position: fixed; bottom: calc(var(--pb-h) + 44px); left: 50%; transform: translateX(-50%);
+    display: flex; gap: clamp(40px, 12vw, 260px); z-index: 5; pointer-events: none; text-align: center;
+  }
+  .quotes small { display: block; font: 600 10px 'Inter Tight', sans-serif; letter-spacing: .22em; text-transform: uppercase; margin-bottom: 8px; }
+  .quotes b { font: 400 clamp(22px, 2.2vw, 34px)/1 'Bodoni Moda', Georgia, serif; text-transform: uppercase; letter-spacing: -.02em; }
+  .quotes .dots { letter-spacing: .3em; font-size: 12px; margin-bottom: 18px; opacity: .9; }
+  .hint { position: fixed; left: 22px; bottom: calc(var(--pb-h) + 30px); font: 10px 'Space Mono', monospace; opacity: .45; letter-spacing: .1em; z-index: 5; }
+  .playbtn {
+    position: fixed; z-index: 6; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(.8);
+    width: 74px; height: 74px; border-radius: 50%; background: rgba(233,228,216,.92); color: #111; font-size: 22px;
+    opacity: 0; transition: opacity .25s, transform .25s; pointer-events: none;
+  }
+  .playbtn.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  @media (max-width: 820px) {
+    .info { width: calc(100vw - 44px); top: 52px; }
+    .info .row:nth-of-type(n+4) { display: none; }
+    .quotes { display: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="info">
+  <h1 class="swap" id="title"></h1>
+  <div class="row swap"><small>Produced by</small><span id="by"></span></div>
+  <div class="row swap"><small>Tempo</small><span id="bpm"></span></div>
+  <div class="row swap"><small>Length</small><span id="len"></span></div>
+  <div class="row swap"><small>Versions</small><span id="vers"></span></div>
+  <div class="row swap"><small>No.</small><span id="no"></span></div>
+</div>
+<div class="quotes">
+  <div><div class="dots" id="dots1"></div><small>Tempo</small><b id="q1"></b></div>
+  <div><div class="dots" id="dots2"></div><small>Status</small><b id="q2"></b></div>
+</div>
+<div class="hint">SCROLL / DRAG · CLICK TO PLAY · ← →</div>
+<button class="playbtn" id="playbtn" aria-hidden="true">▶</button>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { initPlayer } from '../js/player.js';
+import { cover, fmt } from '../js/covers.js';
+import { CONFIG } from '../js/config.js';
+
+const player = initPlayer({ room: 'discs' });
+const BEATS = player.beats;
+const N = BEATS.length;
+
+// ---------- three setup ----------
+const canvas = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, innerWidth < 820 ? 1.5 : 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+const scene = new THREE.Scene();
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
+camera.position.set(0, 0, 20);
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+const key = new THREE.DirectionalLight(0xffffff, 1.6);
+key.position.set(-4, 6, 8);
+scene.add(key);
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  // portrait: back off so the focused disc still fits the width
+  camera.position.z = Math.max(20, 3.1 / (Math.tan(THREE.MathUtils.degToRad(16)) * camera.aspect));
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize();
+
+// ---------- disc label texture ----------
+const labelCache = new Map();
+function discLabel(beat) {
+  if (labelCache.has(beat.id)) return labelCache.get(beat.id);
+  const S = 1024, c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.save();
+  g.beginPath(); g.arc(S / 2, S / 2, S / 2, 0, 7); g.clip();
+  g.drawImage(cover(beat, 1024), 0, 0, S, S);
+  // ring text, like a printed disc
+  g.fillStyle = 'rgba(255,255,255,.75)';
+  g.font = '600 15px "Inter Tight", sans-serif';
+  const text = `PRODUCED BY ${CONFIG.artist}   ·   ${beat.title}   ·   ${beat.bpm ?? '—'} BPM   ·   ${fmt(beat.duration)}   ·   ${CONFIG.artist}`.split('').join(' ');
+  g.translate(S / 2, S / 2);
+  let a = -Math.PI * 0.95;
+  for (const ch of text) {
+    g.save(); g.rotate(a); g.translate(0, -S * 0.44); g.fillText(ch, 0, 0); g.restore();
+    a += (g.measureText(ch).width + 0.6) / (S * 0.44);
+  }
+  g.restore();
+  // centre hole + clear hub ring
+  g.globalCompositeOperation = 'destination-out';
+  g.beginPath(); g.arc(S / 2, S / 2, S * 0.075, 0, 7); g.fill();
+  g.globalCompositeOperation = 'source-over';
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  labelCache.set(beat.id, tex);
+  return tex;
+}
+
+// ---------- disc pool ----------
+const R = 2.25, POOL = 11;
+const edgeMat = new THREE.MeshStandardMaterial({ color: 0xd8d8d8, metalness: 1, roughness: 0.25 });
+const hubMat = new THREE.MeshPhysicalMaterial({ color: 0xf2f2f2, roughness: 0.3, clearcoat: 1, transparent: true, opacity: 0.6 });
+const rimGeo = new THREE.TorusGeometry(R, 0.035, 12, 128);
+const faceGeo = new THREE.CircleGeometry(R, 128);
+const hubGeo = new THREE.RingGeometry(R * 0.15, R * 0.29, 96);
+
+const discs = [];
+for (let k = 0; k < POOL; k++) {
+  const group = new THREE.Group();
+  const spin = new THREE.Group();
+  const faceMat = new THREE.MeshPhysicalMaterial({ roughness: 0.32, metalness: 0.1, clearcoat: 1, clearcoatRoughness: 0.15, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide });
+  const face = new THREE.Mesh(faceGeo, faceMat);
+  const rim = new THREE.Mesh(rimGeo, edgeMat);
+  const hub = new THREE.Mesh(hubGeo, hubMat);
+  hub.position.z = 0.02;
+  spin.add(face, rim, hub);
+  group.add(spin);
+  scene.add(group);
+  discs.push({ group, spin, face, idx: -1 });
+}
+
+// ---------- carousel state ----------
+let pos = Math.max(0, player.index), target = pos, focus = -1;
+const wrap = (i) => ((i % N) + N) % N;
+const rand = (i) => ((Math.sin(i * 91.7) * 43758.5) % 1 + 1) % 1;
+
+function layout(o) {
+  // diagonal arc: lower-left -> upper-right, receding with distance
+  const a = Math.abs(o);
+  return {
+    x: o * 4.4 - Math.sign(o) * Math.max(0, a - 1) * 0.6,
+    y: o * 0.85 + 0.2 - a * a * 0.04,
+    z: -a * 1.6,
+    rx: -0.55 + o * 0.05,
+    ry: o * -0.32,
+    rz: -0.18 + o * 0.06,
+  };
+}
+
+function setFocus(i) {
+  if (i === focus) return;
+  focus = i;
+  const info = document.querySelector('.info');
+  info.classList.add('out');
+  clearTimeout(setFocus.t);
+  setFocus.t = setTimeout(() => {
+    const b = BEATS[i];
+    document.getElementById('title').textContent = b.title;
+    document.getElementById('by').textContent = CONFIG.artist;
+    document.getElementById('bpm').textContent = `${b.bpm ?? '—'} BPM`;
+    document.getElementById('len').textContent = fmt(b.duration);
+    document.getElementById('vers').innerHTML = b.versions.map((v) => v.label).join('<br>');
+    document.getElementById('no').textContent = `${String(i + 1).padStart(3, '0')} / ${N}`;
+    const tempo = !b.bpm ? 'FREE TIME' : b.bpm < 100 ? 'SLOW & HEAVY' : b.bpm < 125 ? 'MID-TEMPO' : b.bpm < 145 ? 'UPTEMPO' : 'FULL SPEED';
+    document.getElementById('q1').innerHTML = `“${tempo}”`;
+    document.getElementById('q2').innerHTML = `“AVAILABLE<br>FOR LEASE”`;
+    const stars = '★'.repeat(Math.min(5, b.versions.length + 3));
+    document.getElementById('dots1').textContent = stars;
+    document.getElementById('dots2').textContent = stars;
+    info.classList.remove('out');
+  }, 180);
+}
+
+// ---------- input ----------
+let snapT;
+const snap = () => { clearTimeout(snapT); snapT = setTimeout(() => (target = Math.round(target)), 160); };
+addEventListener('wheel', (e) => {
+  if (e.target.closest('.pd, .pb')) return;
+  target += (Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX) * 0.0035;
+  snap();
+}, { passive: true });
+
+let drag = null, moved = 0;
+canvas.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, t: target, lx: e.clientX, lt: performance.now(), v: 0 }; moved = 0; canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove', (e) => {
+  if (drag) {
+    const dx = e.clientX - drag.x, now = performance.now();
+    moved = Math.max(moved, Math.abs(dx)); target = drag.t - dx / 260;
+    drag.v = drag.v * 0.5 + (e.clientX - drag.lx) / Math.max(1, now - drag.lt) * 0.5; // px/ms
+    drag.lx = e.clientX; drag.lt = now;
+  }
+  hover(e);
+});
+canvas.addEventListener('pointerup', (e) => {
+  canvas.classList.remove('dragging');
+  // flick: carry the release velocity a few discs further
+  const v = drag && performance.now() - drag.lt < 80 ? drag.v : 0;
+  drag = null;
+  target = Math.round(target - v * 250 / 260);
+  if (moved < 6) click(e);
+});
+addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight') target = Math.round(target) + 1;
+  if (e.key === 'ArrowLeft') target = Math.round(target) - 1;
+  if (e.key === 'Enter') player.play(wrap(Math.round(target)));
+});
+
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+function pick(e) {
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects(discs.map((d) => d.face))[0];
+  return hit && discs.find((d) => d.face === hit.object);
+}
+const playbtn = document.getElementById('playbtn');
+if (matchMedia('(hover: none)').matches) document.querySelector('.hint').textContent = 'SWIPE · TAP DISC TO PLAY';
+function hover(e) {
+  const d = pick(e);
+  const onFocus = d && d.idx === wrap(Math.round(pos));
+  playbtn.classList.toggle('show', !!onFocus && !drag);
+  playbtn.textContent = onFocus && player.playing && player.index === d.idx ? '⏸' : '▶';
+  if (!drag) canvas.style.cursor = d ? 'pointer' : '';
+}
+function click(e) {
+  const d = pick(e);
+  if (!d) return;
+  const cur = wrap(Math.round(pos));
+  if (d.idx === cur) {
+    player.index === cur && player.playing ? player.pause() : player.play(cur);
+  } else {
+    // nearest offset to that disc
+    let o = d.idx - cur;
+    if (o > N / 2) o -= N; if (o < -N / 2) o += N;
+    target = Math.round(target) + o;
+  }
+}
+// follow the player when it changes track elsewhere (drawer, bar)
+player.on('change', (_, i) => {
+  let o = i - wrap(Math.round(target));
+  if (o > N / 2) o -= N; if (o < -N / 2) o += N;
+  target = Math.round(target) + o;
+});
+
+// ---------- loop ----------
+const clock = new THREE.Clock();
+function frame() {
+  requestAnimationFrame(frame);
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  pos += (target - pos) * Math.min(1, dt * 7);
+  const base = Math.round(pos);
+  setFocus(wrap(base));
+
+  discs.forEach((d, k) => {
+    const n = base + k - (POOL >> 1);
+    const i = wrap(n);
+    if (d.idx !== i) { d.idx = i; d.face.material.map = discLabel(BEATS[i]); d.face.material.needsUpdate = true; }
+    const o = n - pos;
+    const L = layout(o);
+    const isPlaying = player.playing && player.index === i;
+    const bob = Math.sin(t * 0.8 + rand(i) * 6) * 0.06;
+    d.group.position.set(L.x, L.y + bob, L.z);
+    d.group.rotation.set(L.rx, L.ry, L.rz);
+    const pulse = isPlaying ? 1 + player.bass * 0.035 : 1;
+    d.group.scale.setScalar(pulse * (Math.abs(o) < 0.5 ? 1.04 : 1));
+    // only the playing disc spins; the others settle upright so titles stay readable
+    if (isPlaying) d.spin.rotation.z -= dt * (0.9 + player.bass * 2);
+    else d.spin.rotation.z += (Math.round(d.spin.rotation.z / (Math.PI * 2)) * Math.PI * 2 - d.spin.rotation.z) * Math.min(1, dt * 3);
+    d.group.visible = Math.abs(o) < 5;
+  });
+  camera.position.x = Math.sin(t * 0.3) * 0.15;
+  camera.position.y = Math.cos(t * 0.25) * 0.1 + player.kick * 0.05;
+  camera.lookAt(0, 0.4, 0);
+  renderer.render(scene, camera);
+}
+frame();
+</script>
+</body>
+</html>
