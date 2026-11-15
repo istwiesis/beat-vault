@@ -910,31 +910,25 @@ async function buildScene() {
       turn.getWorldQuaternion(toTurn).invert();
       for (const h of hubs) {
         if (!h.parts.length) continue;
-        const hc = h.box.getCenter(new THREE.Vector3()), r = (h.box.max.y - h.box.min.y) / 2;
-        // axle and centre (wheels can be cambered, the Ghia's front pair by 15°, so the axle is not simply the car's x axis).
-        // On a turned shape every surface normal points at the axle: with the axle (1, ay, az) and m = centre × axle, each vertex
-        // gives one linear equation (p × n)·axle + m·n = 0. Least squares over the vertices, solved by elimination.
-        // (The old guess, the direction of least vertex spread, was thrown off by uneven vertex density and made these wheels wobble.)
-        const A = [0, 1, 2, 3, 4].map(() => [0, 0, 0, 0, 0, 0]), nv = new THREE.Vector3(), ax = new THREE.Vector3(1, 0, 0);
-        for (const o of h.parts) {
-          const p = o.geometry.attributes.position, nn = o.geometry.attributes.normal, step = Math.ceil(p.count / 4000);
-          if (!nn) continue;
-          for (let k = 0; k < p.count; k += step) {
-            v.fromBufferAttribute(p, k).applyMatrix4(o.matrixWorld).sub(hc).divideScalar(r); nv.fromBufferAttribute(nn, k).transformDirection(o.matrixWorld);
-            const row = [v.z * nv.x - v.x * nv.z, v.x * nv.y - v.y * nv.x, nv.x, nv.y, nv.z, v.z * nv.y - v.y * nv.z];
-            for (let a = 0; a < 5; a++) for (let q = 0; q < 6; q++) A[a][q] += row[a] * row[q];
-          }
+        // axle = the direction in which the wheel is thinnest: its width W·cos θ + D·sin θ is smallest exactly along the axle, however the
+        // vertices are spread (least-squares fits on vertices or normals were skewed by dense rims and tread: the Ghia's cambered front
+        // wheels ended up 5° off and wobbled); centre = middle of the extents across it
+        const pts = [];
+        for (const o of h.parts) { const p = o.geometry.attributes.position, step = Math.ceil(p.count / 20000); for (let k = 0; k < p.count; k += step) { v.fromBufferAttribute(p, k).applyMatrix4(o.matrixWorld); pts.push(v.x, v.y, v.z); } }
+        const span = (d) => { let lo = Infinity, hi = -Infinity; for (let k = 0; k < pts.length; k += 3) { const s = pts[k] * d.x + pts[k + 1] * d.y + pts[k + 2] * d.z; if (s < lo) lo = s; if (s > hi) hi = s; } return [lo, hi]; };
+        const ax = new THREE.Vector3(), width = (ay, az) => { const [lo, hi] = span(ax.set(1, ay, az).normalize()); return hi - lo; };
+        let ay = 0, az = 0, best = width(0, 0);
+        for (let st = 0.25; st > 5e-4; st /= 2) for (let moved = true; moved;) {
+          moved = false;
+          for (const [dy, dz] of [[st, 0], [-st, 0], [0, st], [0, -st]]) { const w2 = width(ay + dy, az + dz); if (w2 < best) { best = w2; ay += dy; az += dz; moved = true; } }
         }
-        for (let a = 0; a < 5; a++) {
-          A[a][a] += 1e-6; // keeps it solvable when a direction is undetermined (then that unknown stays 0)
-          let pv = a; for (let q = a + 1; q < 5; q++) if (Math.abs(A[q][a]) > Math.abs(A[pv][a])) pv = q;
-          [A[a], A[pv]] = [A[pv], A[a]];
-          for (let q = 0; q < 5; q++) if (q !== a) { const f = A[q][a] / A[a][a]; for (let t = a; t < 6; t++) A[q][t] -= f * A[a][t]; }
-        }
-        const sol = A.map((row, a) => row[5] / row[a]);
-        ax.set(1, sol[0], sol[1]).normalize(); // pointing to +x, so a positive turn rolls forward
-        if (ax.x > 0.9 && Math.hypot(sol[3], sol[4]) < 0.1) { hc.y -= sol[4] * r; hc.z += sol[3] * r; } // the true centre, a touch off the box centre when a wheel is not symmetric
-        else ax.set(1, 0, 0); // not a turned shape after all: the car's own axle is closer
+        ax.set(1, ay, az).normalize(); // pointing to +x, so a positive turn rolls forward
+        let hc = h.box.getCenter(new THREE.Vector3()), r = (h.box.max.y - h.box.min.y) / 2;
+        if (ax.x > 0.9) {
+          const u = new THREE.Vector3(0, 1, 0).addScaledVector(ax, -ax.y).normalize(), w = ax.clone().cross(u), mid = (d) => { const [lo, hi] = span(d); return (lo + hi) / 2; };
+          hc = ax.clone().multiplyScalar(mid(ax)).addScaledVector(u, mid(u)).addScaledVector(w, mid(w));
+          r = (span(u)[1] - span(u)[0]) / 2;
+        } else ax.set(1, 0, 0); // not a wheel-shaped set of parts: the car's own axle is closer
         const pivot = new THREE.Group();
         pivot.position.copy(turn.worldToLocal(hc.clone()));
         turn.add(pivot); pivot.updateWorldMatrix(false, false);
