@@ -288,7 +288,7 @@ player.load(view);
 
 // ---------- cars ----------
 // Each model is built differently, so its parts are picked by patterns on "/node/…/node/material":
-// paint, front/rear lamps (they glow with the bass), wheel (meshes that spin), rims (also spin every unnamed part that sits inside a tyre),
+// paint, front/rear lamps (they glow with the bass), wheel (meshes that spin),
 // lens (what marks the front, if not `front`), drop (meshes to remove), len (length in metres, default 4.2).
 const CARS = [
   { name: 'Dacia 1410', file: 'dacia_1410_sport_tuned.glb', title: 'Dacia 1410 Sport Tuned', by: 'Valentin N (vrntech)', lic: 'CC BY-SA 4.0',
@@ -297,10 +297,6 @@ const CARS = [
     paint: /\/material$/, front: /\/polySurface(682|712)\//, rear: /\/polySurface(623|691)\//, wheel: /\/Whee$/ },
   { name: 'Mercedes SS', file: 'cars/mercedes_benz_ss_roadster__www.vecarz.com.glb', title: 'Mercedes Benz SS Roadster', by: 'vecarz', lic: 'CC BY-NC-SA 4.0', len: 4.6,
     paint: /\/Paint_black/, front: /\/Lamp\.002$/, rear: /\/Glass_stop/, wheel: /\/(Tires_0|Disc_0|Disc_1_spokes0[5-8])/ }, // the spare (…_10, spokes09) stays still
-  { name: 'RR Dawn', file: 'cars/rolls-royce_dawn_2016.glb', title: 'Rolls-Royce Dawn (2016)', by: 'geyges', lic: 'Sketchfab Standard', len: 4.9,
-    paint: /\/carpaint/, front: /\/rad_ch2_metal/, rear: /\/glass\.011/, wheel: /\/(tyre|rim)_[LR][FR]_/ },
-  { name: 'RR Phantom', file: 'cars/rollsroyce_phantom.glb', title: 'Rollsroyce Phantom', by: 'Jagguz_wrld', lic: 'CC BY 4.0', len: 5,
-    paint: /\/car_body_in$/, front: /\/front_li(te|ght)_bulb$/, rear: /\/back_light_glass$/, wheel: /\/tire$/, rims: true },
   { name: 'Suzuki Carry', file: 'cars/suzuki_carry_blind_van.glb', title: 'Suzuki Carry Blind Van', by: 'Dave Love', lic: 'CC BY 4.0', len: 3.4,
     paint: /\/MAINBODY\.007$/, front: /\/focos_front/, rear: /\/rearlight/, wheel: /\/(Tyre|EXT_rim|WatanabeMaterial)/ },
 ];
@@ -726,232 +722,287 @@ async function buildScene() {
   // car
   const rig = new THREE.Group();
   scene.add(rig);
-  const glow = []; // emissive lamp materials
   const lampMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.03, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-  const heads = [], wheels = [], flares = [];
-  const addFlare = (p, w, h, base, dir) => { // additive glow in front of a lamp; dir is +1 for front lamps, -1 for rear
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: softDot, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
-    s.scale.set(w, h, 1); s.position.copy(p); carBox.add(s); flares.push({ s, base, dir });
-  };
+  const coneGeo = new THREE.ConeGeometry(1.1, 6, 28, 1, true);
+  const shared = new Set([lampMat, coneGeo, softDot]); // used by every car: never disposed with one
+  const heads = [];
+  // the car on screen: its spinning wheels, lamp glows, emissive lamp materials and spray sources
+  let wheels = [], flares = [], glow = [], sprayFrom = [];
   const under = new THREE.PointLight(0xffffff, 0, 6, 1.5); // glow under the car, driven by the bass
   under.position.set(0, 0.22, 0);
   rig.add(under);
   // spray thrown up behind the wheels; sources are filled in once the model is loaded
-  const SPRAY = narrow() ? 120 : 300, spp = new Float32Array(SPRAY * 3).fill(-10), spv = new Float32Array(SPRAY * 3), spl = new Float32Array(SPRAY), sprayFrom = [];
+  const SPRAY = narrow() ? 120 : 300, spp = new Float32Array(SPRAY * 3).fill(-10), spv = new Float32Array(SPRAY * 3), spl = new Float32Array(SPRAY);
   const sprayGeo = new THREE.BufferGeometry();
   sprayGeo.setAttribute('position', new THREE.BufferAttribute(spp, 3));
   const spray = new THREE.Points(sprayGeo, new THREE.PointsMaterial({ map: softDot, color: 0xffffff, size: 0.2, transparent: true, opacity: 0.13, depthWrite: false }));
   spray.frustumCulled = false; spray.renderOrder = 3;
   rig.add(spray);
   // everything that belongs to one car (model, reflection, lamps, glows) lives in carBox, so a swap can drop it in one go
-  let carBox = null, carZ = 0, leaving = false, next = null, shown = car;
+  // leaveDir: +1 the old car pulls away past the camera, -1 it had not arrived yet and drops back into the fog behind
+  let carBox = null, carZ = 0, leaving = false, leaveDir = 1, next = null, shown = car, loadId = 0;
+  const texturesOf = (m) => Object.values(m).filter((t) => t && t.isTexture);
+  const dispose = (box) => box.traverse((o) => {
+    if (!shared.has(o.geometry)) o.geometry?.dispose();
+    for (const m of [].concat(o.material || [])) { if (shared.has(m)) continue; for (const t of texturesOf(m)) if (!shared.has(t)) t.dispose(); m.dispose(); }
+  });
   const dropCar = () => {
     if (!carBox) return;
-    carBox.traverse((o) => {
-      o.geometry?.dispose();
-      for (const m of [].concat(o.material || [])) { for (const tex of Object.values(m)) if (tex && tex.isTexture && tex !== softDot) tex.dispose(); m.dispose(); }
-    });
-    rig.remove(carBox); carBox = null;
-    wheels.length = flares.length = glow.length = sprayFrom.length = 0;
+    rig.remove(carBox); dispose(carBox); carBox = null;
+    wheels = []; flares = []; glow = []; sprayFrom = [];
   };
   // headlights are made once and only moved per car: adding or removing a light makes every material in the scene recompile
   for (let n = 0; n < 2; n++) { const spot = new THREE.SpotLight(0xffffff, 0, 26, 0.5, 0.7, 1.5); rig.add(spot, spot.target); heads.push(spot); }
-  function mount(job) {
-    dropCar();
-    const cfg = CARS[job.i], model = job.gltf.scene, turn = new THREE.Group(), len = cfg.len || 4.2;
-    carBox = new THREE.Group();
-    // everything below is measured in world space and then attached to the rig, so the rig must sit at the origin while we measure
-    // (the render loop is already swaying it sideways; without this the lamp glows land up to 30 cm off the lamps)
-    rig.position.set(0, 0, 0); rig.rotation.set(0, 0, 0); rig.add(carBox); rig.updateMatrixWorld(true);
-    // parts are picked per car by a pattern on "/node/…/node/material" (see CARS)
-    const path = (o) => { let s = o.material.name || ''; for (let p = o; p && p !== model; p = p.parent) s = p.name + '/' + s; return '/' + s; };
-    const is = (re, o) => !!re && re.test(path(o));
-    // a rigged model that is never animated: swap its skinned meshes for plain ones standing where the bone holds them
-    // (each part hangs rigidly on one bone), which saves hundreds of skeleton updates per frame
-    const rigged = [];
-    model.updateWorldMatrix(true, true);
-    model.traverse((o) => { if (o.isSkinnedMesh) rigged.push(o); });
-    for (const o of rigged) {
-      const g = o.geometry, j = g.attributes.skinIndex.getX(0), m = new THREE.Mesh(g, o.material);
-      m.name = o.name;
-      m.matrix.copy(o.parent.matrixWorld).invert().multiply(o.skeleton.bones[j].matrixWorld).multiply(o.skeleton.boneInverses[j]).multiply(o.bindMatrix);
-      m.matrix.decompose(m.position, m.quaternion, m.scale);
-      g.deleteAttribute('skinIndex'); g.deleteAttribute('skinWeight');
-      o.parent.add(m); o.removeFromParent();
-    }
-    const drop = [], lit = [], aim = [], round = []; let rear = null, bulbs = null;
-    model.traverse((o) => {
-      if (!o.isMesh) return;
-      const m = o.material, name = m.name || '';
-      if (is(cfg.drop, o)) { drop.push(o); return; }
-      if (m.transmission) { m.transmission = 0; m.transparent = true; m.opacity = Math.max(m.opacity, 0.45); m.envMapIntensity = 0.3; m.roughness = Math.max(m.roughness, 0.22); m.clearcoat = 0; m.specularIntensity = 0.2; } // glass: soften the spot highlights and strip reflections so they don't blow out in the bloom
-      if (is(cfg.lens || cfg.front, o)) aim.push(o); // the headlights: they tell where the front is and where the beams start
-      // lamp materials are also used on parts inside the cabin, so only remember candidates here; they are lit by position further down
-      if (name === 'lights_f_bulbs') bulbs = o;
-      if (is(cfg.front, o)) lit.push({ o, base: 0.8, amp: 1.0 });
-      if (is(cfg.rear, o)) { if (name === 'lights_rear_a2') rear = o; lit.push({ o, base: 0.5, amp: 1.5, tail: true }); }
-      if (is(cfg.paint, o)) { m.color.setScalar(0.02); m.clearcoat = 1; m.clearcoatRoughness = 0.3; } // a wider, softer highlight: a mirror-sharp one turns into a white blob in the bloom
-      if (name === 'license') { m.map = null; m.color.setScalar(0.03); m.roughness = 0.35; m.needsUpdate = true; } // blank plate
-      if (is(cfg.wheel, o)) round.push(o);
+
+  // gaps for the render loop: preparing a car is cut into slices of a few ms, so the old car keeps driving smoothly meanwhile
+  let sliceAt = 0;
+  const gap = async (stale) => {
+    if (performance.now() - sliceAt > 8) { await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0))); sliceAt = performance.now(); }
+    if (stale()) throw stale; // a newer pick supersedes this car
+  };
+  // a plain copy of an interleaved attribute: merging cannot read those
+  const plain = (a) => {
+    if (!a.isInterleavedBufferAttribute) return a;
+    const arr = new a.array.constructor(a.count * a.itemSize);
+    for (let k = 0; k < a.count; k++) for (let q = 0; q < a.itemSize; q++) arr[k * a.itemSize + q] = a.getComponent(k, q);
+    return new THREE.BufferAttribute(arr, a.itemSize, a.normalized);
+  };
+  // several meshes sharing one material become one mesh under `parent` (a detailed model has hundreds of parts)
+  const toParent = new THREE.Matrix4();
+  function mergeInto(parent, list, m, cfg) {
+    parent.updateWorldMatrix(true, false);
+    const keep = Object.keys(list[0].geometry.attributes).filter((k) => list.every((o) => o.geometry.attributes[k])); // attributes every part has
+    const indexed = list.some((o) => o.geometry.index);
+    const geos = list.map((o) => {
+      const src = o.geometry, g = new THREE.BufferGeometry();
+      for (const k of keep) g.setAttribute(k, plain(src.attributes[k]).clone());
+      // indices stay: turning everything into loose triangles (as before) tripled the vertices to merge and upload
+      if (src.index) g.setIndex(src.index.clone());
+      else if (indexed) g.setIndex(Array.from({ length: src.attributes.position.count }, (_, k) => k));
+      return g.applyMatrix4(toParent.copy(parent.matrixWorld).invert().multiply(o.matrixWorld));
     });
-    drop.forEach((o) => o.removeFromParent());
-    turn.add(model); carBox.add(turn);
+    let merged = null;
+    try { merged = mergeGeometries(geos); } catch (err) { console.warn('car: parts not merged', cfg.name, m.name, err); }
+    if (!merged) return false; // parts that do not fit together simply stay as they are
+    list.forEach((o) => o.removeFromParent());
+    parent.add(new THREE.Mesh(merged, m));
+    return true;
+  }
 
-    // normalise: `len` units long, centred, wheels on the floor
-    const box = new THREE.Box3().setFromObject(model), size = box.getSize(new THREE.Vector3());
-    model.scale.multiplyScalar(len / Math.max(size.x, size.z));
-    box.setFromObject(model);
-    const c = box.getCenter(new THREE.Vector3());
-    model.position.x -= c.x; model.position.z -= c.z; model.position.y -= box.min.y;
+  // turns a loaded model into a car, without touching the one on screen: measured at the origin, nothing is attached to the rig yet
+  async function prepare(gltf, i, stale) {
+    const cfg = CARS[i], model = gltf.scene, turn = new THREE.Group(), len = cfg.len || 4.2;
+    const box3 = new THREE.Group(), out = { i, box: box3, wheels: [], flares: [], glow: [], sprayFrom: [], beams: [] };
+    sliceAt = performance.now();
+    try {
+      const addFlare = (p, w, h, base, dir) => { // additive glow in front of a lamp; dir is +1 for front lamps, -1 for rear
+        const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: softDot, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+        s.scale.set(w, h, 1); s.position.copy(p); box3.add(s); out.flares.push({ s, base, dir });
+      };
+      // parts are picked per car by a pattern on "/node/…/node/material" (see CARS)
+      const path = (o) => { let s = o.material.name || ''; for (let p = o; p && p !== model; p = p.parent) s = p.name + '/' + s; return '/' + s; };
+      const is = (re, o) => !!re && re.test(path(o));
+      await gap(stale);
+      const drop = [], lit = [], aim = [], round = []; let rear = null, bulbs = null;
+      model.traverse((o) => {
+        if (!o.isMesh) return;
+        const m = o.material, name = m.name || '';
+        if (is(cfg.drop, o)) { drop.push(o); return; }
+        if (m.transmission) { m.transmission = 0; m.transparent = true; m.opacity = Math.max(m.opacity, 0.45); m.envMapIntensity = 0.3; m.roughness = Math.max(m.roughness, 0.22); m.clearcoat = 0; m.specularIntensity = 0.2; } // glass: soften the spot highlights and strip reflections so they don't blow out in the bloom
+        if (is(cfg.lens || cfg.front, o)) aim.push(o); // the headlights: they tell where the front is and where the beams start
+        // lamp materials are also used on parts inside the cabin, so only remember candidates here; they are lit by position further down
+        if (name === 'lights_f_bulbs') bulbs = o;
+        if (is(cfg.front, o)) lit.push({ o, base: 0.8, amp: 1.0 });
+        if (is(cfg.rear, o)) { if (name === 'lights_rear_a2') rear = o; lit.push({ o, base: 0.5, amp: 1.5, tail: true }); }
+        if (is(cfg.paint, o)) { m.color.setScalar(0.02); m.clearcoat = 1; m.clearcoatRoughness = 0.3; } // a wider, softer highlight: a mirror-sharp one turns into a white blob in the bloom
+        if (name === 'license') { m.map = null; m.color.setScalar(0.03); m.roughness = 0.35; m.needsUpdate = true; } // blank plate
+        if (is(cfg.wheel, o)) round.push(o);
+      });
+      drop.forEach((o) => o.removeFromParent());
+      turn.add(model); box3.add(turn);
+      await gap(stale);
 
-    const wb = new THREE.Box3(), ws = new THREE.Vector3(), v = new THREE.Vector3(), inv = new THREE.Matrix4();
-    // face +z, using the headlights to find the front
-    if (aim.length) {
-      aim.reduce((b, o) => b.union(wb.setFromObject(o)), new THREE.Box3()).getCenter(ws);
-      turn.rotation.y = -Math.round(Math.atan2(ws.x, ws.z) / (Math.PI / 2)) * (Math.PI / 2);
-    }
-    turn.updateWorldMatrix(true, true);
-    // one box per side of the car, read vertex by vertex: a single mesh often holds the lamps of both sides
-    const sides = (list) => {
-      const out = [new THREE.Box3(), new THREE.Box3()];
-      for (const o of list) { const n = o.geometry.attributes.position.count, step = Math.ceil(n / 3000); for (let k = 0; k < n; k += step) { o.getVertexPosition(k, v).applyMatrix4(o.matrixWorld); out[v.x > 0 ? 1 : 0].expandByPoint(v); } }
-      return out.filter((b) => !b.isEmpty());
-    };
-    const lamps = sides(aim).map((b) => b.getCenter(new THREE.Vector3()).setZ(b.max.z));
-    if (lamps.length < 2) lamps.splice(0, 2,new THREE.Vector3(-0.6, 0.62, len / 2 - 0.05), new THREE.Vector3(0.6, 0.62, len / 2 - 0.05));
-    // only parts at the very front or rear glow; the same material inside the cabin stays dark
-    const tail = [];
-    for (const l of lit) {
-      const cz = wb.setFromObject(l.o).getCenter(ws).z;
-      if (Math.abs(cz) < len * 0.36) continue;
-      const m = l.o.material = l.o.material.clone();
-      m.emissive = new THREE.Color(0xffffff); if (l.tail) { m.emissiveMap = m.map; tail.push(l.o); }
-      glow.push({ m, base: l.base, amp: l.amp });
-    }
-    // the Dacia's exact lamp positions, read from the model (mesh-local coordinates): four bulbs in front, four lamp fields at the rear
-    const at = (mesh, x, y, z) => new THREE.Vector3(x, y, z).applyMatrix4(mesh.matrixWorld);
-    const frontBulbs = bulbs ? [[-0.659, -2.01], [-0.487, -2.044], [0.487, -2.044], [0.659, -2.01]].map(([x, y]) => at(bulbs, x, y, 0.491)) : [];
-    const rearLamps = rear ? [[-0.646, 1.998], [-0.491, 2.02], [0.491, 2.02], [0.646, 1.998]].map(([x, y]) => at(rear, x, y, 0.53)) : sides(tail).map((b) => b.getCenter(new THREE.Vector3()).setZ(b.min.z));
-    if (frontBulbs.length) { // each headlight is a pair of bulbs: beam and streak sit between the two
-      lamps[0].addVectors(frontBulbs[0], frontBulbs[1]).multiplyScalar(0.5);
-      lamps[1].addVectors(frontBulbs[2], frontBulbs[3]).multiplyScalar(0.5);
-    }
-    lamps.forEach((p, n) => {
-      const spot = heads[n];
-      spot.position.copy(p).z += 0.1;
-      spot.target.position.set(p.x * 1.6, 0, p.z + 12);
-      const cone = new THREE.Mesh(new THREE.ConeGeometry(1.1, 6, 28, 1, true), lampMat);
-      cone.rotation.x = -Math.PI / 2 - 0.05; cone.position.set(p.x * 1.1, p.y - 0.12, p.z + 3);
-      carBox.add(cone);
-      const fp = p.clone(); fp.z += 0.06;
-      addFlare(fp, 1.3, 0.05, 0.1, 1);    // thin horizontal streak across the lamp, like through a wet lens
-    });
-    // one round glow per bulb / lamp field, a few centimetres in front of the glass
-    (frontBulbs.length ? frontBulbs : lamps.map((p) => p.clone())).forEach((b) => { b.z += 0.05; addFlare(b, 0.24, 0.24, 0.3, 1); });
-    rearLamps.forEach((r) => { r.z -= 0.05; addFlare(r, 0.2, 0.16, 0.2, -1); });
+      // normalise: `len` units long, centred, wheels on the floor
+      const box = new THREE.Box3().setFromObject(model), size = box.getSize(new THREE.Vector3());
+      model.scale.multiplyScalar(len / Math.max(size.x, size.z));
+      box.setFromObject(model);
+      const c = box.getCenter(new THREE.Vector3());
+      model.position.x -= c.x; model.position.z -= c.z; model.position.y -= box.min.y;
 
-    // wheels: every part ends up as one mesh per corner of the car, re-centred on its axle so it can spin in place
-    const corner = (p) => (p.x > 0 ? 1 : 0) + (p.z > 0 ? 2 : 0);
-    const cut = (o) => { // one mesh holding several wheels: split its triangles by corner
-      const g = o.geometry, attrs = g.attributes, idx = g.index, n = idx ? idx.count : attrs.position.count, ids = [[], [], [], []];
-      for (let k = 0; k < n; k += 3) {
-        const a = idx ? idx.getX(k) : k;
-        v.fromBufferAttribute(attrs.position, a).applyMatrix4(o.matrixWorld);
-        ids[corner(v)].push(a, idx ? idx.getX(k + 1) : k + 1, idx ? idx.getX(k + 2) : k + 2);
+      const wb = new THREE.Box3(), ws = new THREE.Vector3(), v = new THREE.Vector3(), inv = new THREE.Matrix4();
+      // face +z, using the headlights to find the front
+      if (aim.length) {
+        aim.reduce((b, o) => b.union(wb.setFromObject(o)), new THREE.Box3()).getCenter(ws);
+        turn.rotation.y = -Math.round(Math.atan2(ws.x, ws.z) / (Math.PI / 2)) * (Math.PI / 2);
       }
-      const parts = ids.filter((p) => p.length).map((p) => {
-        const ng = new THREE.BufferGeometry();
-        for (const key in attrs) {
-          const a = attrs[key], arr = new Float32Array(p.length * a.itemSize);
-          p.forEach((vi, j) => { for (let q = 0; q < a.itemSize; q++) arr[j * a.itemSize + q] = a.getComponent(vi, q); });
-          ng.setAttribute(key, new THREE.BufferAttribute(arr, a.itemSize));
+      turn.updateWorldMatrix(true, true);
+      await gap(stale);
+      // one box per side of the car, read vertex by vertex: a single mesh often holds the lamps of both sides
+      const sides = (list) => {
+        const res = [new THREE.Box3(), new THREE.Box3()];
+        for (const o of list) { const n = o.geometry.attributes.position.count, step = Math.ceil(n / 3000); for (let k = 0; k < n; k += step) { o.getVertexPosition(k, v).applyMatrix4(o.matrixWorld); res[v.x > 0 ? 1 : 0].expandByPoint(v); } }
+        return res.filter((b) => !b.isEmpty());
+      };
+      const lamps = sides(aim).map((b) => b.getCenter(new THREE.Vector3()).setZ(b.max.z));
+      if (lamps.length < 2) lamps.splice(0, 2, new THREE.Vector3(-0.6, 0.62, len / 2 - 0.05), new THREE.Vector3(0.6, 0.62, len / 2 - 0.05));
+      // only parts at the very front or rear glow; the same material inside the cabin stays dark
+      const tail = [];
+      for (const l of lit) {
+        const cz = wb.setFromObject(l.o).getCenter(ws).z;
+        if (Math.abs(cz) < len * 0.36) continue;
+        const m = l.o.material = l.o.material.clone();
+        m.emissive = new THREE.Color(0xffffff); if (l.tail) { m.emissiveMap = m.map; tail.push(l.o); }
+        out.glow.push({ m, base: l.base, amp: l.amp });
+      }
+      // the Dacia's exact lamp positions, read from the model (mesh-local coordinates): four bulbs in front, four lamp fields at the rear
+      const at = (mesh, x, y, z) => new THREE.Vector3(x, y, z).applyMatrix4(mesh.matrixWorld);
+      const frontBulbs = bulbs ? [[-0.659, -2.01], [-0.487, -2.044], [0.487, -2.044], [0.659, -2.01]].map(([x, y]) => at(bulbs, x, y, 0.491)) : [];
+      const rearLamps = rear ? [[-0.646, 1.998], [-0.491, 2.02], [0.491, 2.02], [0.646, 1.998]].map(([x, y]) => at(rear, x, y, 0.53)) : sides(tail).map((b) => b.getCenter(new THREE.Vector3()).setZ(b.min.z));
+      if (frontBulbs.length) { // each headlight is a pair of bulbs: beam and streak sit between the two
+        lamps[0].addVectors(frontBulbs[0], frontBulbs[1]).multiplyScalar(0.5);
+        lamps[1].addVectors(frontBulbs[2], frontBulbs[3]).multiplyScalar(0.5);
+      }
+      lamps.forEach((p) => {
+        out.beams.push({ p: p.clone().setZ(p.z + 0.1), t: new THREE.Vector3(p.x * 1.6, 0, p.z + 12) });
+        const cone = new THREE.Mesh(coneGeo, lampMat);
+        cone.rotation.x = -Math.PI / 2 - 0.05; cone.position.set(p.x * 1.1, p.y - 0.12, p.z + 3);
+        box3.add(cone);
+        const fp = p.clone(); fp.z += 0.06;
+        addFlare(fp, 1.3, 0.05, 0.1, 1);    // thin horizontal streak across the lamp, like through a wet lens
+      });
+      // one round glow per bulb / lamp field, a few centimetres in front of the glass
+      (frontBulbs.length ? frontBulbs : lamps.map((p) => p.clone())).forEach((b) => { b.z += 0.05; addFlare(b, 0.24, 0.24, 0.3, 1); });
+      rearLamps.forEach((r) => { r.z -= 0.05; addFlare(r, 0.2, 0.16, 0.2, -1); });
+      await gap(stale);
+
+      // wheels: the parts of each corner hang on one pivot sitting on the axle, and only the pivot spins
+      const corner = (p) => (p.x > 0 ? 1 : 0) + (p.z > 0 ? 2 : 0);
+      const cut = (o) => { // one mesh holding several wheels: split its triangles by corner
+        const g = o.geometry, attrs = g.attributes, idx = g.index, n = idx ? idx.count : attrs.position.count, ids = [[], [], [], []];
+        for (let k = 0; k < n; k += 3) {
+          const a = idx ? idx.getX(k) : k;
+          v.fromBufferAttribute(attrs.position, a).applyMatrix4(o.matrixWorld);
+          ids[corner(v)].push(a, idx ? idx.getX(k + 1) : k + 1, idx ? idx.getX(k + 2) : k + 2);
         }
-        const part = new THREE.Mesh(ng, o.material);
-        part.name = o.name; part.position.copy(o.position); part.quaternion.copy(o.quaternion); part.scale.copy(o.scale);
-        o.parent.add(part); part.updateWorldMatrix(false, false);
-        return part;
-      });
-      o.removeFromParent();
-      return parts;
-    };
-    const hubs = [0, 1, 2, 3].map(() => ({ box: new THREE.Box3(), parts: [] }));
-    for (const o of round) {
-      wb.setFromObject(o);
-      const one = wb.min.x * wb.max.x > 0 && wb.min.z * wb.max.z > 0; // stays on one side of both centre lines: a single wheel
-      for (const part of one ? [o] : cut(o)) { const h = hubs[corner(wb.setFromObject(part).getCenter(ws))]; h.box.union(wb); h.parts.push(part); }
-    }
-    // rims without a name of their own: whatever sits inside a tyre belongs to that wheel
-    if (cfg.rims) model.traverse((o) => { if (!o.isMesh || round.includes(o)) return; wb.setFromObject(o); const h = hubs.find((h) => h.parts.length && h.box.containsBox(wb)); if (h) h.parts.push(o); });
-    for (const h of hubs) {
-      if (!h.parts.length) continue;
-      const hc = h.box.getCenter(new THREE.Vector3()), r = (h.box.max.y - h.box.min.y) / 2;
-      // axle = the direction in which the wheel is thinnest (wheels can be cambered, so it is not simply the car's x axis):
-      // covariance of the vertices, then power iteration on (trace - C), whose strongest direction is C's weakest
-      const C = [0, 0, 0, 0, 0, 0], ax = new THREE.Vector3(1, 0, 0);
-      for (const o of h.parts) {
-        const p = o.geometry.attributes.position, step = Math.ceil(p.count / 1500);
-        for (let k = 0; k < p.count; k += step) { v.fromBufferAttribute(p, k).applyMatrix4(o.matrixWorld).sub(hc); C[0] += v.x * v.x; C[1] += v.y * v.y; C[2] += v.z * v.z; C[3] += v.x * v.y; C[4] += v.x * v.z; C[5] += v.y * v.z; }
+        const parts = ids.filter((p) => p.length).map((p) => {
+          const ng = new THREE.BufferGeometry();
+          for (const key in attrs) {
+            const a = attrs[key], arr = new Float32Array(p.length * a.itemSize);
+            p.forEach((vi, j) => { for (let q = 0; q < a.itemSize; q++) arr[j * a.itemSize + q] = a.getComponent(vi, q); });
+            ng.setAttribute(key, new THREE.BufferAttribute(arr, a.itemSize));
+          }
+          const part = new THREE.Mesh(ng, o.material);
+          part.name = o.name; part.position.copy(o.position); part.quaternion.copy(o.quaternion); part.scale.copy(o.scale);
+          o.parent.add(part); part.updateWorldMatrix(false, false);
+          return part;
+        });
+        o.removeFromParent();
+        return parts;
+      };
+      const hubs = [0, 1, 2, 3].map(() => ({ box: new THREE.Box3(), parts: [] }));
+      for (const o of round) {
+        wb.setFromObject(o);
+        const one = wb.min.x * wb.max.x > 0 && wb.min.z * wb.max.z > 0; // stays on one side of both centre lines: a single wheel
+        for (const part of one ? [o] : cut(o)) { const h = hubs[corner(wb.setFromObject(part).getCenter(ws))]; h.box.union(wb); h.parts.push(part); }
+        await gap(stale);
       }
-      const tr = C[0] + C[1] + C[2];
-      for (let k = 0; k < 40; k++) ax.set(tr * ax.x - (C[0] * ax.x + C[3] * ax.y + C[4] * ax.z), tr * ax.y - (C[3] * ax.x + C[1] * ax.y + C[5] * ax.z), tr * ax.z - (C[4] * ax.x + C[5] * ax.y + C[2] * ax.z)).normalize();
-      if (ax.x < 0) ax.negate(); // pointing to +x, so a positive turn rolls forward
-      if (ax.x < 0.9) { console.warn('car: odd wheel axle, using the car\'s x axis', cfg.name, ax.toArray()); ax.set(1, 0, 0); }
-      for (const o of h.parts) {
-        inv.copy(o.matrixWorld).invert();
-        const lc = hc.clone().applyMatrix4(inv); // the axle in the part's own space
-        o.geometry = o.geometry.clone().translate(-lc.x, -lc.y, -lc.z); // cloned: several wheels may share one geometry
-        o.updateMatrix(); o.position.copy(lc.applyMatrix4(o.matrix)); o.updateWorldMatrix(false, false);
-        inv.copy(o.matrixWorld).invert(); v.copy(ax).transformDirection(inv); // the axle in the part's own space
-        o.userData.spin = [v.x, v.y, v.z, r];
+      const toTurn = new THREE.Quaternion();
+      turn.getWorldQuaternion(toTurn).invert();
+      for (const h of hubs) {
+        if (!h.parts.length) continue;
+        const hc = h.box.getCenter(new THREE.Vector3()), r = (h.box.max.y - h.box.min.y) / 2;
+        // axle = the direction in which the wheel is thinnest (wheels can be cambered, so it is not simply the car's x axis):
+        // covariance of the vertices, then power iteration on (trace - C), whose strongest direction is C's weakest
+        const C = [0, 0, 0, 0, 0, 0], ax = new THREE.Vector3(1, 0, 0);
+        for (const o of h.parts) {
+          const p = o.geometry.attributes.position, step = Math.ceil(p.count / 1500);
+          for (let k = 0; k < p.count; k += step) { v.fromBufferAttribute(p, k).applyMatrix4(o.matrixWorld).sub(hc); C[0] += v.x * v.x; C[1] += v.y * v.y; C[2] += v.z * v.z; C[3] += v.x * v.y; C[4] += v.x * v.z; C[5] += v.y * v.z; }
+        }
+        const tr = C[0] + C[1] + C[2];
+        for (let k = 0; k < 40; k++) ax.set(tr * ax.x - (C[0] * ax.x + C[3] * ax.y + C[4] * ax.z), tr * ax.y - (C[3] * ax.x + C[1] * ax.y + C[5] * ax.z), tr * ax.z - (C[4] * ax.x + C[5] * ax.y + C[2] * ax.z)).normalize();
+        if (ax.x < 0) ax.negate(); // pointing to +x, so a positive turn rolls forward
+        if (ax.x < 0.9) ax.set(1, 0, 0); // not a clean disc (e.g. tyre and rim with very different vertex counts): the car's own axle is closer
+        const pivot = new THREE.Group();
+        pivot.position.copy(turn.worldToLocal(hc.clone()));
+        turn.add(pivot); pivot.updateWorldMatrix(false, false);
+        for (const o of h.parts) pivot.attach(o); // keeps each part exactly where it stands
+        ax.applyQuaternion(toTurn);
+        pivot.userData.spin = [ax.x, ax.y, ax.z, r];
+        // the parts of one wheel that share a material become one mesh (mirrored parts are left alone: merging would turn them inside out)
+        const byMat = new Map();
+        for (const o of h.parts) { if (o.matrixWorld.determinant() < 0 || o.material.transparent) continue; byMat.has(o.material) ? byMat.get(o.material).push(o) : byMat.set(o.material, [o]); }
+        for (const [m, list] of byMat) if (list.length > 1) mergeInto(pivot, list, m, cfg);
+        out.sprayFrom.push(new THREE.Vector3(hc.x, 0.04, hc.z - r * 0.7));
+        await gap(stale);
       }
-      sprayFrom.push(new THREE.Vector3(hc.x, 0.04, hc.z - r * 0.7));
-    }
-    // fewer draw calls: everything that never moves becomes one mesh per material (a detailed model has hundreds of parts)
-    turn.updateWorldMatrix(true, true);
-    const same = new Map(), toTurn = turn.matrixWorld.clone().invert();
-    model.traverse((o) => {
-      const m = o.material; // glass is left alone (its parts are sorted back to front one by one), so are mirrored parts (merging would turn them inside out)
-      if (!o.isMesh || o.userData.spin || m.transparent || o.matrixWorld.determinant() < 0 || Object.keys(o.geometry.morphAttributes).length) return;
-      same.has(m) ? same.get(m).push(o) : same.set(m, [o]);
-    });
-    for (const [m, list] of same) {
-      if (list.length < 2) continue;
-      const keep = Object.keys(list[0].geometry.attributes).filter((k) => list.every((o) => o.geometry.attributes[k])); // attributes every part has
-      const geos = list.map((o) => {
-        let g = o.geometry.clone();
-        for (const k of Object.keys(g.attributes)) if (!keep.includes(k)) g.deleteAttribute(k);
-        if (g.index) g = g.toNonIndexed();
-        return g.applyMatrix4(inv.multiplyMatrices(toTurn, o.matrixWorld));
+      // fewer draw calls: everything that never moves becomes one mesh per material
+      turn.updateWorldMatrix(true, true);
+      const same = new Map();
+      model.traverse((o) => {
+        const m = o.material; // glass is left alone (its parts are sorted back to front one by one), so are mirrored parts (merging would turn them inside out)
+        if (!o.isMesh || m.transparent || o.matrixWorld.determinant() < 0 || Object.keys(o.geometry.morphAttributes).length) return;
+        same.has(m) ? same.get(m).push(o) : same.set(m, [o]);
       });
-      let merged = null;
-      try { merged = mergeGeometries(geos); } catch (err) { console.warn('car: parts not merged', cfg.name, m.name, err); }
-      if (!merged) continue; // parts that do not fit together simply stay as they are
-      list.forEach((o) => o.removeFromParent());
-      turn.add(new THREE.Mesh(merged, m));
-    }
-    if (!narrow()) { const mirror = turn.clone(); mirror.scale.y = -1; carBox.add(mirror); }
-    carBox.traverse((o) => { const s = o.userData.spin; if (s) wheels.push({ o, axis: new THREE.Vector3(s[0], s[1], s[2]), r: s[3] }); });
-    if (wheels.length < 4) console.warn('car: wheels not found', cfg.name);
+      for (const [m, list] of same) {
+        if (list.length < 2) continue;
+        mergeInto(turn, list, m, cfg);
+        await gap(stale);
+      }
+      if (!narrow()) { const mirror = turn.clone(); mirror.scale.y = -1; box3.add(mirror); }
+      box3.traverse((o) => { const s = o.userData.spin; if (s) out.wheels.push({ o, axis: new THREE.Vector3(s[0], s[1], s[2]), r: s[3] }); });
+      if (out.wheels.length < 4 * (narrow() ? 1 : 2)) console.warn('car: wheels not found', cfg.name);
 
+      // textures and shaders go to the GPU now, a few per frame, instead of all at once in the first frame the car is drawn
+      const texs = new Set();
+      box3.traverse((o) => { for (const m of [].concat(o.material || [])) texturesOf(m).forEach((t) => texs.add(t)); });
+      for (const t of texs) { renderer.initTexture(t); await gap(stale); }
+      renderer.setRenderTarget(composer.readBuffer); // the scene is drawn into the composer's target: compile for that, not for the screen
+      const compiled = renderer.compileAsync(box3, camera, scene);
+      renderer.setRenderTarget(null);
+      await compiled;
+      await gap(stale);
+      return out;
+    } catch (err) {
+      dispose(box3);
+      if (err === stale) return null;
+      throw err;
+    }
+  }
+
+  function mount(prep) {
+    const had = !!carBox;
+    dropCar();
+    carBox = prep.box;
+    ({ wheels, flares, glow, sprayFrom } = prep);
+    rig.add(carBox);
+    prep.beams.forEach((b, n) => { heads[n].position.copy(b.p); heads[n].target.position.copy(b.t); });
     // a swapped-in car rolls in from behind, under a lightning strike
-    carZ = leaving && !calm ? -34 : 0;
+    carZ = had && !calm ? -34 : 0;
     if (ready && !calm) strikeInView();
-    shown = job.i; next = null; leaving = false; carPct = null;
+    shown = prep.i; next = null; leaving = false; carPct = null;
     syncCar(); setReady();
   }
   const gltfLoader = new GLTFLoader();
   function loadCar() {
-    const i = car; // a newer pick supersedes this load
-    gltfLoader.load(CARS[i].file, (gltf) => { if (i !== car) return; next = { gltf, i }; if (!leaving) mount(next); }, // while the old car is still pulling away, the render loop mounts it
-      (e) => { if (i !== car || !e.total) return; const pct = Math.min(99, (e.loaded / e.total) * 100); if (ready) { carPct = pct; syncCar(); } else { loadPct = pct; syncLoader(); } },
-      (err) => {
-        console.warn('model failed to load:', err);
-        if (i !== car) return;
-        carPct = null; leaving = false;
-        if (carBox || i === 0) { car = shown; setReady(); } // the car on screen comes back
-        else { car = shown = 0; loadCar(); }                // a saved pick that no longer loads: fall back to the first car
-        syncCar();
-      });
+    const i = car, id = ++loadId, stale = () => id !== loadId; // a newer pick supersedes this load
+    const fail = (err) => {
+      console.warn('model failed to load:', err);
+      if (stale()) return;
+      carPct = null; leaving = false;
+      if (carBox || i === 0) { car = shown; setReady(); } // the car on screen comes back
+      else { car = shown = 0; loadCar(); }                // a saved pick that no longer loads: fall back to the first car
+      syncCar();
+    };
+    gltfLoader.load(CARS[i].file, async (gltf) => {
+      if (stale()) return;
+      let prep;
+      try { prep = await prepare(gltf, i, stale); } catch (err) { fail(err); return; }
+      if (!prep || stale()) { if (prep) dispose(prep.box); return; }
+      next = prep;
+      if (!leaving) mount(next); // while the old car is still pulling away, the render loop mounts it
+    },
+    (e) => { if (stale() || !e.total) return; const pct = Math.min(99, (e.loaded / e.total) * 100); if (ready) { carPct = pct; syncCar(); } else { loadPct = pct; syncLoader(); } },
+    fail);
   }
   loadCar();
 
@@ -979,8 +1030,10 @@ async function buildScene() {
   const floorMat = floor.material;
   return {
     swap() { // `car` was changed by the menu
+      if (next) dispose(next.box);
       next = null;
-      if (car === shown && carBox) { leaving = false; carPct = null; syncCar(); return; } // back to the car that is still on screen
+      if (car === shown && carBox) { loadId++; leaving = false; carPct = null; syncCar(); return; } // back to the car that is still on screen
+      if (!leaving) leaveDir = carZ < -2 ? -1 : 1; // still rolling in: it backs off into the fog it came from
       leaving = !!carBox && !calm;
       loadCar();
     },
@@ -1062,9 +1115,10 @@ async function buildScene() {
         susY = clamp(susY + susV * dt, -0.05, 0.05);
         const lx = wob(time * 0.17, 2) * 0.32, lv = (lx - lastLx) / Math.max(dt, 0.001); lastLx = lx;
         // car swap: the old one pulls away into the fog, the new one rolls in from behind and settles
-        if (leaving) carZ = Math.min(60, carZ + (carZ * 2.4 + 3) * dt); else carZ *= Math.exp(-dt * 2.2);
-        if (next && (!leaving || carZ > 40)) mount(next);
-        if (carBox) carBox.visible = carZ < 45;
+        // (speed grows with the distance from the bay; before, a car leaving while still behind it, carZ < 0, sped off backwards forever and the next one never came)
+        if (leaving) carZ = clamp(carZ + leaveDir * (Math.abs(carZ) * 2.4 + 3) * dt, -60, 60); else carZ *= Math.exp(-dt * 2.2);
+        if (next && (!leaving || Math.abs(carZ) > 40)) mount(next);
+        if (carBox) carBox.visible = Math.abs(carZ) < 45;
         rig.position.set(lx, susY, carZ);
         rig.rotation.set(susV * 0.035 + wob(time * 0.7, 11) * 0.002, lv * 0.06, -lv * 0.05 + wob(time * 0.5, 15) * 0.003);
 
