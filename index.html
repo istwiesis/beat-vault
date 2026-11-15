@@ -911,17 +911,30 @@ async function buildScene() {
       for (const h of hubs) {
         if (!h.parts.length) continue;
         const hc = h.box.getCenter(new THREE.Vector3()), r = (h.box.max.y - h.box.min.y) / 2;
-        // axle = the direction in which the wheel is thinnest (wheels can be cambered, so it is not simply the car's x axis):
-        // covariance of the vertices, then power iteration on (trace - C), whose strongest direction is C's weakest
-        const C = [0, 0, 0, 0, 0, 0], ax = new THREE.Vector3(1, 0, 0);
+        // axle and centre (wheels can be cambered, the Ghia's front pair by 15°, so the axle is not simply the car's x axis).
+        // On a turned shape every surface normal points at the axle: with the axle (1, ay, az) and m = centre × axle, each vertex
+        // gives one linear equation (p × n)·axle + m·n = 0. Least squares over the vertices, solved by elimination.
+        // (The old guess, the direction of least vertex spread, was thrown off by uneven vertex density and made these wheels wobble.)
+        const A = [0, 1, 2, 3, 4].map(() => [0, 0, 0, 0, 0, 0]), nv = new THREE.Vector3(), ax = new THREE.Vector3(1, 0, 0);
         for (const o of h.parts) {
-          const p = o.geometry.attributes.position, step = Math.ceil(p.count / 1500);
-          for (let k = 0; k < p.count; k += step) { v.fromBufferAttribute(p, k).applyMatrix4(o.matrixWorld).sub(hc); C[0] += v.x * v.x; C[1] += v.y * v.y; C[2] += v.z * v.z; C[3] += v.x * v.y; C[4] += v.x * v.z; C[5] += v.y * v.z; }
+          const p = o.geometry.attributes.position, nn = o.geometry.attributes.normal, step = Math.ceil(p.count / 4000);
+          if (!nn) continue;
+          for (let k = 0; k < p.count; k += step) {
+            v.fromBufferAttribute(p, k).applyMatrix4(o.matrixWorld).sub(hc).divideScalar(r); nv.fromBufferAttribute(nn, k).transformDirection(o.matrixWorld);
+            const row = [v.z * nv.x - v.x * nv.z, v.x * nv.y - v.y * nv.x, nv.x, nv.y, nv.z, v.z * nv.y - v.y * nv.z];
+            for (let a = 0; a < 5; a++) for (let q = 0; q < 6; q++) A[a][q] += row[a] * row[q];
+          }
         }
-        const tr = C[0] + C[1] + C[2];
-        for (let k = 0; k < 40; k++) ax.set(tr * ax.x - (C[0] * ax.x + C[3] * ax.y + C[4] * ax.z), tr * ax.y - (C[3] * ax.x + C[1] * ax.y + C[5] * ax.z), tr * ax.z - (C[4] * ax.x + C[5] * ax.y + C[2] * ax.z)).normalize();
-        if (ax.x < 0) ax.negate(); // pointing to +x, so a positive turn rolls forward
-        if (ax.x < 0.9) ax.set(1, 0, 0); // not a clean disc (e.g. tyre and rim with very different vertex counts): the car's own axle is closer
+        for (let a = 0; a < 5; a++) {
+          A[a][a] += 1e-6; // keeps it solvable when a direction is undetermined (then that unknown stays 0)
+          let pv = a; for (let q = a + 1; q < 5; q++) if (Math.abs(A[q][a]) > Math.abs(A[pv][a])) pv = q;
+          [A[a], A[pv]] = [A[pv], A[a]];
+          for (let q = 0; q < 5; q++) if (q !== a) { const f = A[q][a] / A[a][a]; for (let t = a; t < 6; t++) A[q][t] -= f * A[a][t]; }
+        }
+        const sol = A.map((row, a) => row[5] / row[a]);
+        ax.set(1, sol[0], sol[1]).normalize(); // pointing to +x, so a positive turn rolls forward
+        if (ax.x > 0.9 && Math.hypot(sol[3], sol[4]) < 0.1) { hc.y -= sol[4] * r; hc.z += sol[3] * r; } // the true centre, a touch off the box centre when a wheel is not symmetric
+        else ax.set(1, 0, 0); // not a turned shape after all: the car's own axle is closer
         const pivot = new THREE.Group();
         pivot.position.copy(turn.worldToLocal(hc.clone()));
         turn.add(pivot); pivot.updateWorldMatrix(false, false);
@@ -1026,7 +1039,7 @@ async function buildScene() {
   // a bolt inside the current view, so a strike triggered from the logo is actually seen
   const strikeInView = () => { flash = 1; strike(Math.atan2(camTgt.x - camPos.x, camTgt.z - camPos.z) + (Math.random() - .5) * 0.9); };
   let eBass = 0, eKick = 0, eLevel = 0; // audio envelopes: quick attack, slow release, so nothing snaps
-  let susY = 0, susV = 0, lastLx = 0;   // suspension spring and lane drift
+  let susY = 0, susV = 0, lastLx = 0, lv = 0;   // suspension spring and lane drift
   const floorMat = floor.material;
   return {
     swap() { // `car` was changed by the menu
@@ -1063,7 +1076,7 @@ async function buildScene() {
       floorMat.map.offset.y = -((travel * 48 / 120) % 1);
       floorMat.roughnessMap.offset.y = -((travel * 7 / 120) % 1);
       stencil.position.z = 26 - (travel % 57.6);
-      if (!calm) for (const w of wheels) w.o.rotateOnAxis(w.axis, (speed * dt) / w.r);
+      if (!calm) for (const w of wheels) w.o.rotateOnAxis(w.axis, Math.min(speed / w.r, 16) * dt); // capped: a faster turn than ~0.25 rad per frame strobes (spokes seem to jump or run backwards)
       tubes.forEach((m, n) => m.material.color.setScalar(0.42 + eLevel * 0.5 + wob(time * 6 + n, n * 3.1) * 0.03)); // steady lamps with a faint flicker
       under.intensity = eBass * 5;
 
@@ -1110,17 +1123,19 @@ async function buildScene() {
       lampMat.opacity = 0.012 + eBass * 0.015;
       if (!calm) {
         // body on a damped spring, shaken by the road surface and nudged by kicks; it leans into its own lane drift
-        const bump = wob(travel * 0.8, 3) * 0.6 + wob(travel * 2.9, 7) * 0.4;
-        susV += (-susY * 110 - susV * 10 + bump * 0.5) * dt;
-        susY = clamp(susY + susV * dt, -0.05, 0.05);
-        const lx = wob(time * 0.17, 2) * 0.32, lv = (lx - lastLx) / Math.max(dt, 0.001); lastLx = lx;
+        // soft and well damped (the old stiff spring fed by fast road noise made the whole car, tyres included, tremble)
+        const bump = wob(travel * 0.35, 3);
+        susV += (-susY * 36 - susV * 11 + bump * 0.12) * dt;
+        susY = clamp(susY + susV * dt, -0.03, 0.03);
+        const lx = wob(time * 0.17, 2) * 0.32; // lane drift; its speed is smoothed so the lean never twitches with frame timing
+        lv += ((lx - lastLx) / Math.max(dt, 0.001) - lv) * (1 - Math.exp(-dt * 5)); lastLx = lx;
         // car swap: the old one pulls away into the fog, the new one rolls in from behind and settles
         // (speed grows with the distance from the bay; before, a car leaving while still behind it, carZ < 0, sped off backwards forever and the next one never came)
         if (leaving) carZ = clamp(carZ + leaveDir * (Math.abs(carZ) * 2.4 + 3) * dt, -60, 60); else carZ *= Math.exp(-dt * 2.2);
         if (next && (!leaving || Math.abs(carZ) > 40)) mount(next);
         if (carBox) carBox.visible = Math.abs(carZ) < 45;
         rig.position.set(lx, susY, carZ);
-        rig.rotation.set(susV * 0.035 + wob(time * 0.7, 11) * 0.002, lv * 0.06, -lv * 0.05 + wob(time * 0.5, 15) * 0.003);
+        rig.rotation.set(susV * 0.02 + wob(time * 0.4, 11) * 0.0015, lv * 0.05, -lv * 0.04 + wob(time * 0.3, 15) * 0.002);
 
         for (const s of mist) { s.position.z -= speed * dt * 0.35; if (s.position.z < -22) { s.position.z += 44; s.position.x = (Math.random() - .5) * 26; } }
         for (let n = 0; n < SPRAY; n++) {
